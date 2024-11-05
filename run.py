@@ -63,7 +63,7 @@ async def endpoint_evaluation_request(client, ep_config):
     else:
            rnd_num = None
            random_tokens = args.random_tokens
-           prompt = args.prompt + " " + " ".join([gen_random_string(2) for _ in range(random_tokens)])
+           prompt = args.prompt + " " + " ".join([gen_random_string(2) for _ in range(random_tokens)]) + "\n Give me an extreme long analysis on the previous text"
 
     words = ""
     try:
