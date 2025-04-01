@@ -58,14 +58,16 @@ async def endpoint_evaluation_request(client, ep_config):
         prompt = (
             "Convert the following sequence of words into a number:"
             f" {rnd_num_words}.\nPrint the number first, then tell me a very long"
-            " story."
+            " story. "
         )
     else:
            rnd_num = None
            random_tokens = args.random_tokens
-           prompt = args.prompt + " " + " ".join([gen_random_string(2) for _ in range(random_tokens)]) + "\n Give me an extreme long analysis on the previous text"
+           random_tokens_str = " ".join(random.choices(args.random_token_list, k=random_tokens))
+           prompt = args.prompt + random_tokens_str + ". Give me an extreme long analysis on the previous text"
 
     words = ""
+
     try:
         st = time.time()
         ttft = None
@@ -155,6 +157,7 @@ def endpoint_evaluation_qps(client, ep_config, results_queue, stop_event):
 
     def task_done_callback(task):
         results_queue.put(task.result())
+
 
     while True:
         if stop_event.is_set():
@@ -378,6 +381,12 @@ def results_analysis(
         json_output_f.close()
 
 
+def read_tokens_to_list(file_path):
+    with open(file_path, 'r') as file:
+        tokens_list = file.read().strip().splitlines()
+    return tokens_list
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -526,5 +535,6 @@ if __name__ == "__main__":
 
     args.concur_requests = concur_requests
 
+    args.random_token_list = read_tokens_to_list('words_alpha.txt')
     # Endpoint evaluation
     endpoint_evaluation(endpoint_config)
