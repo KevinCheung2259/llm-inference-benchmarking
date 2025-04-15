@@ -535,6 +535,7 @@ if __name__ == "__main__":
 
     args.concur_requests = concur_requests
 
-    args.random_token_list = read_tokens_to_list('english_words.txt')
+    args.random_token_list = read_tokens_to_list('words_alpha.txt')
+    
     # Endpoint evaluation
     endpoint_evaluation(endpoint_config)
