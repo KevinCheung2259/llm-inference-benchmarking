@@ -19,7 +19,7 @@ cd llm-inference-bench-char
 
 pip install -r requirements.txt
 
-python run.py --rounds 1 -q 0.5 --api-base http://localhost:8080/api/v1 --model mn-starcannon-13b  --max-tokens=250 --prompt-file prompt-1k.txt --random-tokens 3000 --use-chat
+python run.py --rounds 1 -q 0.5 --api-base http://localhost:8080/api/v1 --model Nitral-AI/Captain-Eris_Violet-V0.420-12B  --max-tokens=250 --prompt-file prompt-1k.txt --random-tokens 3000 --use-chat
 ```
 This benchmark runs 0.5 rps on a 13b model with an input of 4.5k tokens and an output of 250 tokens, prefix cache rate 20%. 
 
