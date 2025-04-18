@@ -60,6 +60,7 @@ Key parameters:
 - `--round-duration`: Performance statistics collection period (seconds)
 - `--api-base`: API service endpoint
 - `--model`: Model name
+- `--max-token`: Maximum token output of the model
 - `--use-chat`: Whether to use chat interface
 - `--json-output`: Output performance metrics in JSON format
 - `--verbose`: Enable detailed logging output (default: False, only show statistics)

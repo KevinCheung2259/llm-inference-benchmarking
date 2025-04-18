@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 import math
 import sys
+import hashlib
 from collections import Counter
 
 # Configure logging
@@ -49,7 +50,7 @@ job_queue = queue.PriorityQueue()
 
 class ReplayJob:
     """Class representing a job to be replayed."""
-    def __init__(self, timestamp: int, url: str, headers: Dict[str, str], body: Dict[str, Any], use_chat: bool = True):
+    def __init__(self, timestamp: int, url: str, headers: Dict[str, str], body: Dict[str, Any], conversation_id: str, use_chat: bool = True):
         self.timestamp = timestamp
         self.url = url
         self.headers = headers
@@ -60,7 +61,7 @@ class ReplayJob:
         self.second_timestamp = timestamp // 1000000000
         
         # Get conversation ID for sampling
-        self.conversation_id = headers.get('X-Flow-Conversation-Id', '')
+        self.conversation_id = conversation_id
     
     def __lt__(self, other):
         return self.timestamp < other.timestamp
@@ -167,7 +168,12 @@ def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None
         if not should_process_conversation(conversation_id, sample_rate):
             logger.debug(f"Skipping conversation {conversation_id} due to sampling")
             return None
-        
+
+        # 将conversation_id由uuid转为int, 不然production-stack的router会报错
+        hash_obj = hashlib.sha256(conversation_id.encode())
+        conversation_id_int = int(hash_obj.hexdigest(), 16)
+        conversation_id = conversation_id_int
+
         # 使用传入的配置
         if ep_config is None:
             ep_config = {
@@ -184,7 +190,7 @@ def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None
         }
 
         # 构造请求体
-        if ep_config.get("use_chat", True):  # 使用配置中的use_chat参数
+        if ep_config.get("use_chat", True):
             messages = request_data['body'].get('prompt', [])
             # print("messages", messages)
             # print("---------------------------------------------------------------")
@@ -197,7 +203,7 @@ def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None
                 "model": ep_config["model"],
                 "messages": messages,
                 "stream": True,
-                "max_tokens": request_data['body'].get('max_tokens', 2048),
+                "max_tokens": ep_config.get("max_tokens", 200),
                 "temperature": 0
             }
             url = f"{ep_config['api_base'].rstrip('/')}/chat/completions"
@@ -207,7 +213,7 @@ def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None
                 "model": ep_config["model"],
                 "messages": [request_data['body'].get('prompt', '')],
                 "stream": True,
-                "max_tokens": request_data['body'].get('max_tokens', 2048),
+                "max_tokens": ep_config.get("max_tokens", 200),
                 "temperature": 0
             }
             url = f"{ep_config['api_base'].rstrip('/')}/completions"
@@ -218,6 +224,7 @@ def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None
             url=url,
             headers=headers,
             body=body,
+            conversation_id=conversation_id,
             use_chat=ep_config.get("use_chat", False)  # 使用配置中的use_chat参数
         )
         
@@ -271,6 +278,9 @@ async def send_request(client, job):
         tokens_in = 0
         tokens_out = 0
         
+        # Add conversation_id to headers
+        extra_headers = {"x-user-id": str(job.conversation_id)} if job.conversation_id else {}
+        
         if job.use_chat:
             if not job.body.get("messages"):
                 logger.warning("Empty messages array, skipping request")
@@ -278,20 +288,24 @@ async def send_request(client, job):
             
             response = await client.chat.completions.create(
                 model=job.body.get("model"),
-                messages=job.body.get("messages"),
-                max_tokens=job.body.get("max_tokens", 2048),
+                messages=[
+                    {"role": "user", "content": job.body.get("messages")}
+                ],
+                max_tokens=job.body.get("max_tokens", 200),
                 temperature=0,
                 stream=True,
                 stream_options={"include_usage": True},
+                extra_headers=extra_headers,
             )
         else:
             response = await client.completions.create(
                 model=job.body.get("model"),
                 prompt=job.body.get("messages"),
-                max_tokens=job.body.get("max_tokens", 2048),
+                max_tokens=job.body.get("max_tokens", 200),
                 temperature=0,
                 stream=True,
                 stream_options={"include_usage": True},
+                extra_headers=extra_headers,
             )
             
         words = ""
@@ -898,12 +912,13 @@ def main(args):
         # 设置日志级别
         set_logging_level(args.verbose)
         
-        # 创建配置字典
+        # 创建配置
         ep_config = {
             "api_base": args.api_base,
             "api_key": args.api_key,
             "model": args.model,
-            "use_chat": args.use_chat
+            "use_chat": args.use_chat,
+            "max_tokens": args.max_tokens
         }
         
         # Start the log reader thread
@@ -935,7 +950,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Replay chat log requests')
-    parser.add_argument('--input', '-i', default="replay-logs-origin.log",
+    parser.add_argument('--input', '-i', default="/mnt/shared/data/replay-logs-origin.log",
                         help='Input log file (default: chat_log.log)')
     parser.add_argument('--preload-time', '-p', type=int, default=2,
                         help='Preload time in seconds (default: 2)')
@@ -947,6 +962,8 @@ if __name__ == "__main__":
                         help="Model name to use")
     parser.add_argument("--use-chat", type=bool, default=False,
                         help="Whether to use the chat endpoint")
+    parser.add_argument("--max-tokens", type=int, default=200,
+                        help="Maximum number of tokens to generate (default: 200)")
     parser.add_argument("--round-duration", type=int, default=60,
                         help="Duration of each round in seconds (default: 60)")
 
