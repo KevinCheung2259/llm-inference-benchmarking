@@ -270,6 +270,43 @@ def log_reader_thread(input_file: str, preload_time: int = 180, sample_rate: flo
         logger.error(f"Error in log reader thread: {e}")
         raise
 
+# 全局会话对象管理类
+class ClientManager:
+    def __init__(self):
+        self._client = None
+        self._background_tasks = set()
+        self._lock = threading.Lock()
+    
+    async def get_client(self, ep_config: dict) -> openai.AsyncOpenAI:
+        """获取或创建client实例"""
+        with self._lock:
+            if self._client is None:
+                self._client = openai.AsyncOpenAI(
+                    base_url=ep_config["api_base"],
+                    api_key=ep_config["api_key"]
+                )
+            return self._client
+    
+    def add_background_task(self, task: asyncio.Task):
+        """添加后台任务"""
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+    
+    async def cleanup(self):
+        """清理所有资源"""
+        with self._lock:
+            if self._client:
+                await self._client.close()
+                self._client = None
+            
+            # 等待所有后台任务完成
+            if self._background_tasks:
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
+                self._background_tasks.clear()
+
+# 创建全局ClientManager实例
+client_manager = ClientManager()
+
 async def send_request(client, job):
     """Send a single request asynchronously and collect metrics."""
     try:
@@ -332,71 +369,12 @@ async def send_request(client, job):
         return ("OK", ttft, total_time, tokens_in, tokens_out, "")
         
     except asyncio.TimeoutError:
-        logger.debug("Request timed out after 2s")
+        logger.error("Request timed out after 2s")
         return ("Exception", -1, -1, -1, -1, "Timeout")
     except Exception as e:
         logger.error(f"Request failed: {e}")
         return ("Exception", -1, -1, -1, -1, str(e))
-
-# 全局会话对象，避免频繁创建和销毁
-global_client = None
-background_tasks = set()
-
-async def endpoint_evaluation_request(client, ep_config):
-    """从日志中提取请求并发送，收集性能指标"""
-    try:
-        # 从队列中获取一个请求
-        if job_queue.empty():
-            return ("Exception", -1, -1, -1, -1, "No more requests in queue")
-            
-        job = job_queue.get()
-        return await send_request(client, job)
-        
-    except Exception as e:
-        logger.error(f"Request failed in endpoint evaluation: {e}")
-        return ("Exception", -1, -1, -1, -1, str(e))
-
-async def send_batch_requests_without_waiting(jobs, ep_config: dict = None):
-    """发送批量请求但不等待完成。"""
-    global global_client
     
-    if global_client is None:
-        if ep_config is None:
-            raise ValueError("ep_config must be provided when creating new session")
-        global_client = openai.AsyncOpenAI(
-            base_url=ep_config["api_base"],
-            api_key=ep_config["api_key"]
-        )
-    
-    # 创建背景任务来处理响应
-    async def process_responses(jobs_list):
-        try:
-            tasks = []
-            for job in jobs_list:
-                task = asyncio.create_task(send_request(global_client, job))
-                tasks.append(task)
-            
-            # 等待所有请求完成并记录结果
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            success_count = sum(1 for result in results if result[0] == "OK")
-            logger.info(f"Sent batch of {len(jobs_list)} requests, {success_count} successful")
-            return results
-        except Exception as e:
-            logger.error(f"Error in background task: {e}")
-            return []
-    
-    # 创建后台任务并保持引用防止被垃圾回收
-    task = asyncio.create_task(process_responses(jobs))
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
-    
-    # 等待任务完成并返回结果
-    return await task
-
-def group_jobs_by_second(jobs):
-    """Group jobs by their second timestamp."""
-    jobs.sort(key=lambda job: job.second_timestamp)
-    return {k: list(g) for k, g in groupby(jobs, key=lambda job: job.second_timestamp)}
 
 class ResultCollector:
     """用于收集和分析请求结果的类"""
@@ -452,7 +430,8 @@ class ResultCollector:
                 self.query_results,
                 self.elts,
                 self.ep_config["model"],
-                qps=qps or actual_qps,
+                qps=qps,  # 使用传入的目标QPS
+                actual_qps=actual_qps,  # 同时传入实际QPS
                 concur_requests=concur_requests,
                 json_output=args.json_output,
             )
@@ -549,34 +528,52 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
         raise
 
 async def replay_by_qps(client, ep_config, target_qps, round_duration):
-    """按指定QPS重放请求"""
+    """按指定QPS重放请求，使用令牌桶算法确保QPS精确控制"""
     result_collector = ResultCollector(ep_config, round_duration)
     time_between_requests = 1.0 / target_qps
+    
+    # 初始化计时器和请求计数器
+    last_request_time = time.time()
+    expected_requests = 0
     
     try:
         while True:
             try:
                 if job_queue.empty():
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.01)
                     continue
                 
-                request_start = time.time()
-                job = job_queue.get()
+                # 计算当前时间和应发送的请求数
+                current_time = time.time()
+                elapsed_since_start = current_time - result_collector.round_start_time
+                expected_requests = math.floor(elapsed_since_start * target_qps)
                 
-                # 创建异步任务并设置回调
-                task = asyncio.create_task(send_request(client, job))
-                task.add_done_callback(result_collector.task_done_callback)
+                # 如果已发送的请求少于应发送的请求，则发送请求
+                if result_collector.jobs_processed < expected_requests:
+                    jobs_to_send = expected_requests - result_collector.jobs_processed
+                    
+                    # 批量发送请求以赶上目标QPS
+                    for _ in range(min(jobs_to_send, job_queue.qsize())):
+                        if job_queue.empty():
+                            break
+                            
+                        job = job_queue.get()
+                        task = asyncio.create_task(send_request(client, job))
+                        task.add_done_callback(result_collector.task_done_callback)
+                        result_collector.increment_jobs_processed()
                 
-                result_collector.increment_jobs_processed()
-                
-                # 收集和处理结果
+                # 收集结果并报告指标
                 result_collector.collect_results()
                 result_collector.check_and_report_metrics(qps=target_qps)
                 
-                # 计算需要等待的时间以维持目标QPS
-                elapsed = time.time() - request_start
-                if elapsed < time_between_requests:
-                    await asyncio.sleep(time_between_requests - elapsed)
+                # 精确控制循环间隔，避免CPU空转
+                next_decision_time = result_collector.round_start_time + ((result_collector.jobs_processed + 1) / target_qps)
+                sleep_time = max(0, next_decision_time - time.time())
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+                else:
+                    # 防止过度占用CPU
+                    await asyncio.sleep(0.001)
                 
             except Exception as e:
                 logger.error(f"Error in QPS replay: {e}")
@@ -600,10 +597,7 @@ async def async_replay_loop(start_timestamp, start_time, ep_config: dict = None,
                           target_qps: float = 1.0, round_duration: int = 60):
     """根据不同模式选择相应的重放方式"""
     try:
-        client = openai.AsyncOpenAI(
-            base_url=ep_config["api_base"],
-            api_key=ep_config["api_key"]
-        )
+        client = await client_manager.get_client(ep_config)
         
         if replay_mode == "timestamp":
             await replay_by_timestamp(client, ep_config, start_timestamp, start_time, round_duration)
@@ -613,11 +607,8 @@ async def async_replay_loop(start_timestamp, start_time, ep_config: dict = None,
             logger.error(f"Unknown replay mode: {replay_mode}")
             
     finally:
-        # 清理全局会话
-        global global_client
-        if global_client:
-            await global_client.close()
-            global_client = None
+        # 清理资源
+        await client_manager.cleanup()
 
 def replay_thread(ep_config: dict = None, replay_mode: str = "timestamp", 
                  target_qps: float = 1.0, round_duration: int = 60):
@@ -655,7 +646,9 @@ def replay_thread(ep_config: dict = None, replay_mode: str = "timestamp",
         logger.error(f"Error in replay thread: {e}")
         raise
 
-def results_analysis(query_results, elts, model, concur_requests=None, qps=None, json_output=None):
+def results_analysis(
+    query_results, elts, model, concur_requests=None, qps=None, actual_qps=None, json_output=None
+):
     """分析请求结果并输出性能指标"""
     print("-------------------------")
     if json_output:
@@ -716,7 +709,9 @@ def results_analysis(query_results, elts, model, concur_requests=None, qps=None,
         if concur_requests is not None:
             title += f"concurrency={concur_requests}, "
         if qps is not None:
-            title += f"qps={int(qps) if int(qps) == qps else qps}, "
+            title += f"target_qps={int(qps) if int(qps) == qps else qps}, "
+        if actual_qps is not None:
+            title += f"actual_qps={actual_qps:.2f}, "
         title += f"success_rate={success_rate:.2f}%, "
         title += f"input_tokens={mean_tokens_in}, output_tokens={mean_tokens_out})"
         table.title = title
@@ -725,7 +720,9 @@ def results_analysis(query_results, elts, model, concur_requests=None, qps=None,
             if concur_requests is not None:
                 json_record["concurrency"] = concur_requests
             if qps is not None:
-                json_record["qps"] = qps
+                json_record["target_qps"] = qps
+            if actual_qps is not None:
+                json_record["actual_qps"] = actual_qps
             json_record["success_rate"] = success_rate
             json_record["input_tokens"] = mean_tokens_in
             json_record["output_tokens"] = mean_tokens_out
@@ -788,123 +785,6 @@ def results_analysis(query_results, elts, model, concur_requests=None, qps=None,
         json_output_f.write("\n")
         json_output_f.close()
 
-async def endpoint_evaluation_round(client, concur_requests, ep_config):
-    """执行一轮并发请求评估"""
-    results = await asyncio.gather(*(
-        endpoint_evaluation_request(client, ep_config) for _ in range(concur_requests)
-    ))
-    return results
-
-def endpoint_evaluation_qps(client, ep_config, results_queue, stop_event):
-    """按QPS执行请求评估"""
-    loop = asyncio.new_event_loop()
-
-    def run_loop():
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-
-    threading.Thread(target=run_loop).start()
-
-    time_between_requests = 1 / args.qps
-
-    def task_done_callback(task):
-        results_queue.put(task.result())
-
-    while True:
-        if stop_event.is_set():
-            print("stop event received, stopping loop")
-            loop.call_soon_threadsafe(loop.stop)
-            return
-
-        st = time.time()
-        future = asyncio.run_coroutine_threadsafe(
-            endpoint_evaluation_request(client, ep_config), loop
-        )
-        future.add_done_callback(task_done_callback)
-        et = time.time()
-        tosleep = time_between_requests - (et - st)
-        if tosleep > 0:
-            time.sleep(tosleep)
-
-    return results_queue
-
-def endpoint_evaluation(ep_config):
-    """执行端点评估"""
-    client = openai.AsyncOpenAI(
-        base_url=ep_config["api_base"], api_key=ep_config["api_key"]
-    )
-    loop = asyncio.new_event_loop()
-
-    if ep_config["model"] is None:
-        async def get_model():
-            async for model in client.models.list():
-                ep_config["model"] = model.id
-                break
-        loop.run_until_complete(get_model())
-
-    for _ in range(args.warmup):
-        loop.run_until_complete(endpoint_evaluation_request(client, ep_config))
-
-    if args.qps is not None:
-        num_results_per_round = math.ceil(args.qps * args.round_duration)
-        query_results = []
-        elts = []
-        results_queue = queue.Queue()
-        stop_event = threading.Event()
-        threading.Thread(
-            target=endpoint_evaluation_qps,
-            args=(client, ep_config, results_queue, stop_event),
-        ).start()
-
-        st = time.time()
-        try:
-            while True:
-                round_results = []
-                round_start = time.time()
-                while time.time() - round_start < args.round_duration:
-                    try:
-                        result = results_queue.get(timeout=0.1)
-                        round_results.append(result)
-                    except queue.Empty:
-                        pass
-                query_results.extend(round_results)
-                et = time.time()
-                elts.append(et - st)
-                st = et
-                results_analysis(
-                    query_results,
-                    elts,
-                    ep_config["model"],
-                    qps=args.qps,
-                    json_output=args.json_output,
-                )
-                query_results = []
-                elts = []
-        finally:
-            stop_event.set()
-    else:
-        for concur_requests in args.concur_requests:
-            query_results = []
-            elts = []
-            for _ in range(args.rounds):
-                st = time.time()
-                results = []
-                while time.time() - st < args.round_duration:
-                    round_results = loop.run_until_complete(
-                        endpoint_evaluation_round(client, concur_requests, ep_config)
-                    )
-                    results.extend(round_results)
-                query_results.extend(results)
-                et = time.time()
-                elt = et - st
-                elts.append(elt)
-            results_analysis(
-                query_results,
-                elts,
-                ep_config["model"],
-                concur_requests,
-                json_output=args.json_output,
-            )
 
 def main(args):
     """Main function to start both threads."""
@@ -938,9 +818,14 @@ def main(args):
         replay_thread_instance.daemon = True
         replay_thread_instance.start()
         
-        # Wait for both threads to complete
-        reader_thread.join()
-        replay_thread_instance.join()
+        try:
+            # Wait for both threads to complete
+            reader_thread.join()
+            replay_thread_instance.join()
+        finally:
+            # 确保在主程序退出时清理资源
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(client_manager.cleanup())
         
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, stopping threads")
@@ -962,8 +847,8 @@ if __name__ == "__main__":
                         help="Model name to use")
     parser.add_argument("--use-chat", type=bool, default=False,
                         help="Whether to use the chat endpoint")
-    parser.add_argument("--max-tokens", type=int, default=200,
-                        help="Maximum number of tokens to generate (default: 200)")
+    parser.add_argument("--max-tokens", type=int, default=180,
+                        help="Maximum number of tokens to generate (default: 180)")
     parser.add_argument("--round-duration", type=int, default=60,
                         help="Duration of each round in seconds (default: 60)")
 
