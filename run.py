@@ -218,13 +218,19 @@ def endpoint_evaluation(ep_config):
                         pass
                 query_results.extend(round_results)
                 et = time.time()
-                elts.append(et - st)
+                elapsed_time = et - st
+                elts.append(elapsed_time)
                 st = et
+                
+                # Calculate actual QPS
+                actual_qps = len(round_results) / elapsed_time
+                
                 results_analysis(
                     query_results,
                     elts,
                     ep_config["model"],
                     qps=args.qps,
+                    actual_qps=actual_qps,
                     json_output=args.json_output,
                 )
                 query_results = []
@@ -257,7 +263,7 @@ def endpoint_evaluation(ep_config):
 
 
 def results_analysis(
-    query_results, elts, model, concur_requests=None, qps=None, json_output=None
+    query_results, elts, model, concur_requests=None, qps=None, actual_qps=None, json_output=None
 ):
     print("-------------------------")
     if json_output:
@@ -306,7 +312,9 @@ def results_analysis(
             title += f"concurrency={concur_requests}, "
         if qps is not None:
             # if qps is integer, show it as integer, otherwise show it as float
-            title += f"qps={int(qps) if int(qps) == qps else qps}, "
+            title += f"target_qps={int(qps) if int(qps) == qps else qps}, "
+        if actual_qps is not None:
+            title += f"actual_qps={actual_qps:.2f}, "
         title += f"input_tokens={mean_tokens_in}, output_tokens={mean_tokens_out})"
         table.title = title
 
@@ -314,7 +322,9 @@ def results_analysis(
             if concur_requests is not None:
                 json_record["concurrency"] = concur_requests
             if qps is not None:
-                json_record["qps"] = qps
+                json_record["target_qps"] = qps
+            if actual_qps is not None:
+                json_record["actual_qps"] = actual_qps
             json_record["input_tokens"] = mean_tokens_in
             json_record["output_tokens"] = mean_tokens_out
             json_record["model"] = model
