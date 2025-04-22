@@ -1,9 +1,9 @@
 # LLM Inference Benchmarking for Chat 
 
-### Set up vllm server 
+### Set up standalone vllm server 
 
 ```
-docker run -p 8080:8080 --gpus all vllm/vllm-openai --model Nitral-AI/Captain-Eris_Violet-V0.420-12B --max-model-len 10000 --swap-space 4 --dtype auto --enable-chunked-prefill --disable-log-requests --enable-prefix-caching --port 8080 --root-path /api --served-model-name Nitral-AI/Captain-Eris_Violet-V0.420-12B --max-num-seqs 72 --quantization fp8 --max-num-batched-tokens 1024
+docker run -p 8080:8080 --gpus all vllm/vllm-openai --model Nitral-AI/Captain-Eris_Violet-V0.420-12B --max-model-len 10000 --swap-space 4 --dtype auto --enable-chunked-prefill --disable-log-requests --enable-prefix-caching --port 8080 --root-path /api --served-model-name Nitral-AI/Captain-Eris_Violet-V0.420-12B --max-num-seqs 72 --quantization fp8 --max-num-batched-tokens 1024 --kv-cache-dtype fp8
 ```
 
 ----------------------
