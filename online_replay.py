@@ -124,12 +124,16 @@ def extract_json_from_log(line: str) -> Optional[dict]:
         logger.error(f"Unexpected error: {e}")
         return None
 
-def should_process_conversation(conversation_id: str, sample_rate: float) -> bool:
-    """基于conversationId确定是否处理该请求，根据采样率进行筛选。"""
-    if sample_rate >= 1.0:
+def should_process_conversation(conversation_id: str, sample_start: float, sample_end: float) -> bool:
+    """基于conversationId确定是否处理该请求，根据采样范围[start, end)进行筛选。"""
+    # Ensure range is valid
+    if sample_start >= sample_end or sample_start < 0.0 or sample_end > 1.0:
+         logger.warning(f"Invalid sample range [{sample_start}, {sample_end}). Skipping filtering.")
+         return True # Or handle as an error / default behavior
+
+    # If range covers everything
+    if sample_start == 0.0 and sample_end == 1.0:
         return True
-    if sample_rate <= 0.0:
-        return False
     
     # 计算hash值，使其分布在0-1之间
     hash_obj = hashlib.md5(conversation_id.encode())
@@ -138,10 +142,10 @@ def should_process_conversation(conversation_id: str, sample_rate: float) -> boo
     hash_int = int.from_bytes(hash_bytes[:4], byteorder='big')
     normalized_hash = hash_int / (2**32)
     
-    # 如果哈希值小于采样率，就处理它
-    return normalized_hash < sample_rate
+    # 如果哈希值在 [start, end) 区间内，就处理它
+    return sample_start <= normalized_hash < sample_end
 
-def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None) -> Optional[ReplayJob]:
+def process_log_line(line: str, sample_start: float = 0.0, sample_end: float = 1.0, ep_config: dict = None) -> Optional[ReplayJob]:
     """Process a single log line and convert it to a ReplayJob."""
     try:
         # Extract timestamp
@@ -165,8 +169,8 @@ def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None
         conversation_id = request_data.get('conversationId', '')
         
         # 根据采样率检查是否需要处理该conversationId
-        if not should_process_conversation(conversation_id, sample_rate):
-            logger.debug(f"Skipping conversation {conversation_id} due to sampling")
+        if not should_process_conversation(conversation_id, sample_start, sample_end):
+            logger.debug(f"Skipping conversation {conversation_id} due to sampling range [{sample_start}, {sample_end}) - hash: {hashlib.md5(conversation_id.encode()).hexdigest()[:8]}") # Log hash for debugging
             return None
 
         # 使用传入的配置
@@ -229,10 +233,10 @@ def process_log_line(line: str, sample_rate: float = 1.0, ep_config: dict = None
         logger.error(f"Error processing line: {e}")
         return None
 
-def log_reader_thread(input_file: str, preload_time: int = 180, sample_rate: float = 1.0, ep_config: dict = None):
+def log_reader_thread(input_file: str, preload_time: int = 180, sample_start: float = 0.0, sample_end: float = 1.0, ep_config: dict = None):
     """Thread A: Read log file and add jobs to the queue."""
     try:
-        logger.info(f"Starting log reader thread with {preload_time} seconds preload time and {sample_rate*100:.1f}% sample rate")
+        logger.info(f"Starting log reader thread with {preload_time} seconds preload time and sample range [{sample_start*100:.1f}%, {sample_end*100:.1f}%)")
         job_count = 0
         skipped_count = 0
         last_timestamp = None
@@ -241,7 +245,7 @@ def log_reader_thread(input_file: str, preload_time: int = 180, sample_rate: flo
             for line_number, line in enumerate(fin, 1):
                 try:
                     logger.debug(f"Processing line {line_number}")
-                    job = process_log_line(line.strip(), sample_rate, ep_config)
+                    job = process_log_line(line.strip(), sample_start, sample_end, ep_config)
                     if job:
                         # Add job to queue
                         job_queue.put(job)
@@ -516,6 +520,7 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
                     # 最后一次收集结果
                     result_collector.collect_results()
                     result_collector.check_and_report_metrics()
+                    logger.info("All requests processed, exiting")
                     break
                     
     except Exception as e:
@@ -582,6 +587,7 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration):
                     # 最后一次收集结果
                     result_collector.collect_results()
                     result_collector.check_and_report_metrics(qps=target_qps)
+                    logger.info("All requests processed, exiting")
                     break
                     
     except Exception as e:
@@ -781,7 +787,7 @@ def results_analysis(
         json_output_f.close()
 
 
-def main(args):
+def main(args, sample_start, sample_end):
     """Main function to start both threads."""
     try:
         # 设置日志级别
@@ -797,7 +803,7 @@ def main(args):
         }
         
         # Start the log reader thread
-        reader_thread = threading.Thread(target=log_reader_thread, args=(args.input, args.preload_time, args.sample_rate, ep_config))
+        reader_thread = threading.Thread(target=log_reader_thread, args=(args.input, args.preload_time, sample_start, sample_end, ep_config))
         reader_thread.daemon = True
         reader_thread.start()
         
@@ -850,8 +856,9 @@ if __name__ == "__main__":
     # 选择重放模式
     parser.add_argument("--replay-mode", type=str, choices=["timestamp", "qps"],
                         default="timestamp", help="Replay mode: timestamp/qps")
-    parser.add_argument('--sample-rate', '-s', type=float, default=0.1,
-                        help='Sample rate (0.0-1.0) to control the percentage of requests to send (default: 0.1)')
+    parser.add_argument('--sample-range', type=float, nargs=2, default=[0.0, 1.0],
+                        metavar=('START', 'END'),
+                        help='Sample range [START, END) to control the percentage of requests to send (e.g., 0.0 0.2). Default: [0.0, 1.0]')
     parser.add_argument("--target-qps", type=float, default=1.0,
                         help="Target QPS for qps mode")
     
@@ -864,9 +871,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # 确保采样率在合理范围
-    args.sample_rate = max(0.0, min(1.0, args.sample_rate))
+    sample_start, sample_end = args.sample_range
+    if not (0.0 <= sample_start < sample_end <= 1.0):
+        raise ValueError(f"Invalid sample range [{sample_start}, {sample_end}). Must be 0.0 <= START < END <= 1.0")
+    logger.info(f"Using sample range: [{sample_start}, {sample_end})")
     
     try:
-        main(args)
+        main(args, sample_start, sample_end)
     except Exception as e:
         logger.error(f"Failed to process log file: {e}") 

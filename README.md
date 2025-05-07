@@ -35,13 +35,13 @@ The online_replay.py script allows you to replay requests from log file with two
 
 1. Timestamp-based replay (maintains original request timing):
 ```bash
-python online_replay.py --input replay-logs-origin.log --replay-mode timestamp --sample-rate 0.1 \
+python online_replay.py --input replay-logs-origin.log --replay-mode timestamp --sample-range 0.0 0.1 \
     --api-base http://localhost:8080/api/v1 --model Nitral-AI/Captain-Eris_Violet-V0.420-12B --round-duration 60
 ```
 
 2. QPS-based replay (controls request rate):
 ```bash
-python online_replay.py --input replay-logs-origin.log --replay-mode qps --target-qps 5 --sample-rate 0.1 \
+python online_replay.py --input replay-logs-origin.log --replay-mode qps --target-qps 5 --sample-range 0.0 0.1 \
     --api-base http://localhost:8080/api/v1 --model Nitral-AI/Captain-Eris_Violet-V0.420-12B --round-duration 60
 ```
 
@@ -56,7 +56,7 @@ python online_replay.py --input replay-logs-origin.log --replay-mode qps --targe
 Key parameters:
 - `--input`: Input log file path
 - `--replay-mode`: Replay mode (timestamp/qps)
-- `--sample-rate`: Sampling rate (0.0-1.0), controls the proportion of requests to replay
+- `--sample-range`: Sampling range [START, END) to control the percentage of requests to send (e.g., 0.0 0.2)
 - `--round-duration`: Performance statistics collection period (seconds)
 - `--api-base`: API service endpoint
 - `--model`: Model name
@@ -64,7 +64,6 @@ Key parameters:
 - `--use-chat`: Whether to use chat interface
 - `--json-output`: Output performance metrics in JSON format
 - `--verbose`: Enable detailed logging output (default: False, only show statistics)
-
 
 Performance metrics:
 - Latency statistics
@@ -74,3 +73,11 @@ Performance metrics:
 - Input/Output Tokens per Minute
 - Success Rate
 
+#### Attention
+If you want to start a process using online_replay.py to replay qps>10, you'd better split it to multiple terminals and run them separately. By modifying the `--sample-range` parameter, you can specify different sampling ranges for each process. This approach helps avoid client-side issues caused by high concurrency. You can refer to `run_client_split.sh` for implementation details.
+
+For example, to achieve a total QPS of 20, you can:
+1. Run the first process with `--target-qps 10  --sample-range 0.0 0.5` in one terminal
+2. Run the second process with `--target-qps 10  --sample-range 0.5 1.0` in another terminal
+
+This distributed approach ensures better stability and more accurate benchmarking results.
