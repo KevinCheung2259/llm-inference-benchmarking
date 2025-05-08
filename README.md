@@ -81,3 +81,5 @@ For example, to achieve a total QPS of 20, you can:
 2. Run the second process with `--target-qps 10  --sample-range 0.5 1.0` in another terminal
 
 This distributed approach ensures better stability and more accurate benchmarking results.
+
+To stop processes, open a new terminal and run `pkill -f "online_replay.py"`
