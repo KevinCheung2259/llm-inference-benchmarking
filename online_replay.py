@@ -377,7 +377,7 @@ async def send_request(client, job):
 
 class ResultCollector:
     """用于收集和分析请求结果的类"""
-    def __init__(self, ep_config, round_duration):
+    def __init__(self, ep_config, round_duration, max_rounds=None):
         self.results_queue = queue.Queue()
         self.query_results = []
         self.elts = []
@@ -387,6 +387,8 @@ class ResultCollector:
         self.round_duration = round_duration
         self.total_requests = 0
         self.successful_requests = 0
+        self.current_round = 0
+        self.max_rounds = max_rounds
 
     def task_done_callback(self, task):
         """处理异步任务完成的回调函数"""
@@ -420,6 +422,7 @@ class ResultCollector:
         """检查是否需要报告指标并重置统计"""
         current_time = time.time()
         if current_time - self.round_start_time >= self.round_duration:
+            self.current_round += 1
             elapsed_time = current_time - self.round_start_time
             self.elts.append(elapsed_time)
             actual_qps = self.jobs_processed / elapsed_time
@@ -440,13 +443,19 @@ class ResultCollector:
             self.jobs_processed = 0
             self.round_start_time = current_time
 
+            # 检查是否达到最大轮数
+            if self.max_rounds is not None and self.current_round >= self.max_rounds:
+                logger.info(f"达到最大轮数 {self.max_rounds}，直接结束进程")
+                os._exit(0)  # 直接结束进程
+        return False
+
     def increment_jobs_processed(self, count=1):
         """增加已处理的任务数"""
         self.jobs_processed += count
 
-async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, round_duration):
+async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, round_duration, max_rounds=None):
     """按原始时间戳重放请求"""
-    result_collector = ResultCollector(ep_config, round_duration)
+    result_collector = ResultCollector(ep_config, round_duration, max_rounds)
     current_second = None
     current_jobs = []
     
@@ -502,7 +511,8 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
                 
                 # 收集和处理结果
                 result_collector.collect_results()
-                result_collector.check_and_report_metrics()
+                if result_collector.check_and_report_metrics():
+                    break
                 
                 # 如果没有新任务，短暂等待
                 if job_queue.empty():
@@ -527,9 +537,9 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
         logger.error(f"Error in timestamp replay: {e}")
         raise
 
-async def replay_by_qps(client, ep_config, target_qps, round_duration):
+async def replay_by_qps(client, ep_config, target_qps, round_duration, max_rounds=None):
     """按指定QPS重放请求，使用令牌桶算法确保QPS精确控制"""
-    result_collector = ResultCollector(ep_config, round_duration)
+    result_collector = ResultCollector(ep_config, round_duration, max_rounds)
     time_between_requests = 1.0 / target_qps
     
     # 初始化计时器和请求计数器
@@ -564,7 +574,8 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration):
                 
                 # 收集结果并报告指标
                 result_collector.collect_results()
-                result_collector.check_and_report_metrics(qps=target_qps)
+                if result_collector.check_and_report_metrics(qps=target_qps):
+                    break
                 
                 # 精确控制循环间隔，避免CPU空转
                 next_decision_time = result_collector.round_start_time + ((result_collector.jobs_processed + 1) / target_qps)
@@ -595,15 +606,15 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration):
         raise
 
 async def async_replay_loop(start_timestamp, start_time, ep_config: dict = None, replay_mode: str = "timestamp", 
-                          target_qps: float = 1.0, round_duration: int = 60):
+                          target_qps: float = 1.0, round_duration: int = 60, max_rounds: int = None):
     """根据不同模式选择相应的重放方式"""
     try:
         client = await client_manager.get_client(ep_config)
         
         if replay_mode == "timestamp":
-            await replay_by_timestamp(client, ep_config, start_timestamp, start_time, round_duration)
+            await replay_by_timestamp(client, ep_config, start_timestamp, start_time, round_duration, max_rounds)
         elif replay_mode == "qps":
-            await replay_by_qps(client, ep_config, target_qps, round_duration)
+            await replay_by_qps(client, ep_config, target_qps, round_duration, max_rounds)
         else:
             logger.error(f"Unknown replay mode: {replay_mode}")
             
@@ -612,7 +623,7 @@ async def async_replay_loop(start_timestamp, start_time, ep_config: dict = None,
         await client_manager.cleanup()
 
 def replay_thread(ep_config: dict = None, replay_mode: str = "timestamp", 
-                 target_qps: float = 1.0, round_duration: int = 60):
+                 target_qps: float = 1.0, round_duration: int = 60, max_rounds: int = None):
     """Thread B: Consume jobs from the queue and send requests in batches by second."""
     try:
         logger.info("Starting replay thread")
@@ -636,7 +647,7 @@ def replay_thread(ep_config: dict = None, replay_mode: str = "timestamp",
         try:
             loop.run_until_complete(async_replay_loop(
                 start_timestamp, start_time, ep_config,
-                replay_mode, target_qps, round_duration
+                replay_mode, target_qps, round_duration, max_rounds
             ))
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received, stopping replay")
@@ -653,7 +664,11 @@ def results_analysis(
     """分析请求结果并输出性能指标"""
     print("-------------------------")
     if json_output:
-        json_output_f = open(json_output, "a")
+        try:
+            json_output_f = open(json_output, "a+")
+        except IOError as e:
+            logger.error(f"无法创建或打开输出文件 {json_output}: {e}")
+            json_output = None
 
     df = pd.DataFrame(
         query_results,
@@ -814,7 +829,7 @@ def main(args, sample_start, sample_end):
         # Start the replay thread with ep_config and replay parameters
         replay_thread_instance = threading.Thread(
             target=replay_thread, 
-            args=(ep_config, args.replay_mode, args.target_qps, args.round_duration)
+            args=(ep_config, args.replay_mode, args.target_qps, args.round_duration, args.max_rounds)
         )
         replay_thread_instance.daemon = True
         replay_thread_instance.start()
@@ -852,6 +867,8 @@ if __name__ == "__main__":
                         help="Maximum number of tokens to generate (default: 180)")
     parser.add_argument("--round-duration", type=int, default=60,
                         help="Duration of each round in seconds (default: 60)")
+    parser.add_argument("--max-rounds", type=int, default=None,
+                        help="Maximum number of rounds to run (default: None, run until all requests are processed)")
 
     # 选择重放模式
     parser.add_argument("--replay-mode", type=str, choices=["timestamp", "qps"],

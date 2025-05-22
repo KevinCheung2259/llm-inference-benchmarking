@@ -58,6 +58,7 @@ Key parameters:
 - `--replay-mode`: Replay mode (timestamp/qps)
 - `--sample-range`: Sampling range [START, END) to control the percentage of requests to send (e.g., 0.0 0.2)
 - `--round-duration`: Performance statistics collection period (seconds)
+- `--max-rounds`: Maximum number of rounds to run
 - `--api-base`: API service endpoint
 - `--model`: Model name
 - `--max-token`: Maximum token output of the model
@@ -82,4 +83,4 @@ For example, to achieve a total QPS of 20, you can:
 
 This distributed approach ensures better stability and more accurate benchmarking results.
 
-To stop processes, open a new terminal and run `pkill -f "online_replay.py"`
+To stop processes, you can also open a new terminal and run `pkill -f "online_replay.py"`
