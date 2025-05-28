@@ -53,6 +53,11 @@ python online_replay.py --input replay-logs-origin.log --replay-mode qps --targe
 
     This is caused by non-uniform request arrival patterns. According to queueing theory, when requests arrive non-uniformly (e.g., Poisson process with high variance), bursty requests can lead to temporary queue buildup, significantly increasing the average queuing time.
 
+- What is the detailed logging feature?
+
+    The `--detailed-logs` parameter enables real-time tracking of each request's performance metrics. Each request is assigned a unique ID, and detailed information including send time, TTFT, completion time, token counts, and processing times are recorded in a CSV file. This data is written in real-time to a `log/detailed_results_[timestamp].csv` file, allowing for detailed analysis of request performance patterns.
+
+
 Key parameters:
 - `--input`: Input log file path
 - `--replay-mode`: Replay mode (timestamp/qps)
@@ -65,6 +70,7 @@ Key parameters:
 - `--use-chat`: Whether to use chat interface
 - `--json-output`: Output performance metrics in JSON format
 - `--verbose`: Enable detailed logging output (default: False, only show statistics)
+- `--detailed-logs`: Enable detailed per-request logging with unique IDs (saved to CSV file)
 
 Performance metrics:
 - Latency statistics
@@ -84,3 +90,19 @@ For example, to achieve a total QPS of 20, you can:
 This distributed approach ensures better stability and more accurate benchmarking results.
 
 To stop processes, you can also open a new terminal and run `pkill -f "online_replay.py"`
+
+### Detailed Log Format
+
+When using the `--detailed-logs` parameter, the script generates a CSV file with the following columns:
+
+- `request_id`: Unique identifier for each request (UUID)
+- `conversation_id`: Original conversation ID from the log file
+- `send_time`: Timestamp when the request was sent
+- `ttft_time`: Timestamp when the first token was received
+- `total_time`: Timestamp when the response was completed
+- `tokens_in`: Number of input tokens
+- `tokens_out`: Number of output tokens
+- `ttft`: Time to first token (seconds)
+- `tpot`: Time per output token (seconds)
+
+This data can be analyzed using any CSV-compatible tool such as pandas, Excel, or data visualization software to identify performance patterns, bottlenecks, or unusual behavior in your LLM serving system.

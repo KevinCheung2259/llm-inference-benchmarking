@@ -22,6 +22,11 @@ import math
 import sys
 import hashlib
 from collections import Counter
+import uuid
+import signal
+
+# 全局变量
+global_result_collector = None
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +67,9 @@ class ReplayJob:
         
         # Get conversation ID for sampling
         self.conversation_id = conversation_id
+        
+        # 添加唯一会话ID用于追踪每个请求
+        self.request_id = str(uuid.uuid4())
     
     def __lt__(self, other):
         return self.timestamp < other.timestamp
@@ -309,18 +317,21 @@ client_manager = ClientManager()
 async def send_request(client, job):
     """Send a single request asynchronously and collect metrics."""
     try:
-        start_time = time.time()
+        start_time = time.perf_counter()
         ttft = None
         tokens_in = 0
         tokens_out = 0
         
-        # Add conversation_id to headers
-        extra_headers = {"X-Flow-Conversation-Id": str(job.conversation_id)} if job.conversation_id else {}
+        # Add headers for tracking
+        extra_headers = {
+            "X-Flow-Conversation-Id": str(job.conversation_id) if job.conversation_id else "",
+            "X-Request-Id": job.request_id  # vllm读取这个字段作为request_id，添加request_id到请求头，用于全链路追踪
+        }
         
         if job.use_chat:
             if not job.body.get("messages"):
                 logger.warning("Empty messages array, skipping request")
-                return ("Exception", -1, -1, -1, -1, "Empty messages")
+                return (job.request_id, "Exception", -1, -1, -1, -1, "Empty messages")
             
             response = await client.chat.completions.create(
                 model=job.body.get("model"),
@@ -352,43 +363,71 @@ async def send_request(client, job):
                 delta = tok.choices[0].delta
                 if delta.content:
                     if ttft is None:
-                        ttft = time.time() - start_time
+                        ttft = time.perf_counter() - start_time
                     words += delta.content
             else:
                 delta = tok.choices[0]
                 if delta.text:
                     if ttft is None:
-                        ttft = time.time() - start_time
+                        ttft = time.perf_counter() - start_time
                     words += delta.text
                     
         tokens_in = tok.usage.prompt_tokens
         tokens_out = tok.usage.completion_tokens
-        total_time = time.time() - start_time
+        total_time = time.perf_counter() - start_time
         
-        return ("OK", ttft, total_time, tokens_in, tokens_out, "")
+        return (job.request_id, "OK", ttft, total_time, tokens_in, tokens_out, "")
         
     except asyncio.TimeoutError:
         logger.error("Request timed out after 2s")
-        return ("Exception", -1, -1, -1, -1, "Timeout")
+        return (job.request_id, "Exception", -1, -1, -1, -1, "Timeout")
     except Exception as e:
         logger.error(f"Request failed: {e}")
-        return ("Exception", -1, -1, -1, -1, str(e))
+        return (job.request_id, "Exception", -1, -1, -1, -1, str(e))
     
 
 class ResultCollector:
     """用于收集和分析请求结果的类"""
-    def __init__(self, ep_config, round_duration, max_rounds=None):
+    def __init__(self, ep_config, round_duration, max_rounds=None, detailed_logs=False):
         self.results_queue = queue.Queue()
         self.query_results = []
         self.elts = []
         self.jobs_processed = 0
-        self.round_start_time = time.time()
+        self.round_start_time = time.perf_counter()
         self.ep_config = ep_config
         self.round_duration = round_duration
         self.total_requests = 0
         self.successful_requests = 0
         self.current_round = 0
         self.max_rounds = max_rounds
+        self.detailed_logs = detailed_logs
+        
+        # 用于详细日志的数据结构
+        if detailed_logs:
+            self.detailed_results = {}
+            
+            # 创建CSV文件并写入表头
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 设置csv路径，使用当前文件所在文件夹下的log文件夹
+            log_dir = os.path.join(os.path.dirname(__file__), "log")
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            self.csv_filename = f"{log_dir}/detailed_results_{timestamp}.csv"
+            self.csv_file = open(self.csv_filename, 'w')
+            self.csv_file.write("request_id,conversation_id,send_time,ttft_time,total_time,tokens_in,tokens_out,ttft,tpot\n")
+            self.csv_file.flush()
+            logger.info(f"已创建详细日志文件: {self.csv_filename}")
+            
+            # 注册信号处理函数，在Ctrl+C时关闭文件
+            def signal_handler(sig, frame):
+                logger.info("收到中断信号，关闭日志文件...")
+                if hasattr(self, 'csv_file') and not self.csv_file.closed:
+                    self.csv_file.close()
+                logger.info("详细日志已保存，程序退出")
+                sys.exit(0)
+            
+            # 注册SIGINT信号处理函数
+            signal.signal(signal.SIGINT, signal_handler)
 
     def task_done_callback(self, task):
         """处理异步任务完成的回调函数"""
@@ -420,7 +459,7 @@ class ResultCollector:
 
     def check_and_report_metrics(self, qps=None, concur_requests=None):
         """检查是否需要报告指标并重置统计"""
-        current_time = time.time()
+        current_time = time.perf_counter()
         if current_time - self.round_start_time >= self.round_duration:
             self.current_round += 1
             elapsed_time = current_time - self.round_start_time
@@ -445,6 +484,11 @@ class ResultCollector:
 
             # 检查是否达到最大轮数
             if self.max_rounds is not None and self.current_round >= self.max_rounds:
+                # 关闭详细日志文件
+                if self.detailed_logs and hasattr(self, 'csv_file') and not self.csv_file.closed:
+                    self.csv_file.close()
+                    logger.info(f"已关闭详细日志文件: {self.csv_filename}")
+                
                 logger.info(f"达到最大轮数 {self.max_rounds}，直接结束进程")
                 os._exit(0)  # 直接结束进程
         return False
@@ -452,10 +496,66 @@ class ResultCollector:
     def increment_jobs_processed(self, count=1):
         """增加已处理的任务数"""
         self.jobs_processed += count
+        
+    def add_detailed_result(self, request_id, conversation_id, send_time, ttft, total_time, tokens_in, tokens_out):
+        """添加详细的请求结果记录并实时写入CSV文件"""
+        if self.detailed_logs:
+            # 计算相关指标
+            ttft_time = send_time + ttft if ttft > 0 else None
+            total_end_time = send_time + total_time if total_time > 0 else None
+            tpot = total_time - ttft if ttft > 0 and total_time > 0 else None
+            
+            # 保存到内存中
+            self.detailed_results[request_id] = {
+                'conversation_id': conversation_id,
+                'send_time': send_time,
+                'ttft_time': ttft_time,
+                'total_time': total_end_time,
+                'tokens_in': tokens_in,
+                'tokens_out': tokens_out,
+                'ttft': ttft,
+                'tpot': tpot
+            }
+            
+            # 实时写入CSV文件
+            if hasattr(self, 'csv_file') and not self.csv_file.closed:
+                csv_line = f"{request_id},{conversation_id},{send_time},{ttft_time},{total_end_time},{tokens_in},{tokens_out},{ttft},{tpot}\n"
+                self.csv_file.write(csv_line)
+                self.csv_file.flush()  # 立即写入磁盘
+    
+    def save_detailed_results(self):
+        """关闭CSV文件"""
+        if self.detailed_logs and hasattr(self, 'csv_file') and not self.csv_file.closed:
+            self.csv_file.close()
+            logger.info(f"已关闭详细日志文件: {self.csv_filename}")
 
-async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, round_duration, max_rounds=None):
+async def async_replay_loop(start_timestamp, start_time, ep_config: dict = None, replay_mode: str = "timestamp", 
+                          target_qps: float = 1.0, round_duration: int = 60, max_rounds: int = None,
+                          detailed_logs: bool = False):
+    """根据不同模式选择相应的重放方式"""
+    try:
+        client = await client_manager.get_client(ep_config)
+        
+        # 创建结果收集器并设置为全局变量
+        global global_result_collector
+        
+        if replay_mode == "timestamp":
+            result_collector = ResultCollector(ep_config, round_duration, max_rounds, detailed_logs)
+            global_result_collector = result_collector
+            await replay_by_timestamp(client, result_collector, start_timestamp, start_time, round_duration, max_rounds, detailed_logs)
+        elif replay_mode == "qps":
+            result_collector = ResultCollector(ep_config, round_duration, max_rounds, detailed_logs)
+            global_result_collector = result_collector
+            await replay_by_qps(client, result_collector, target_qps, round_duration, max_rounds, detailed_logs)
+        else:
+            logger.error(f"Unknown replay mode: {replay_mode}")
+            
+    finally:
+        # 清理资源
+        await client_manager.cleanup()
+
+async def replay_by_timestamp(client, result_collector, start_timestamp, start_time, round_duration, max_rounds=None, detailed_logs=False):
     """按原始时间戳重放请求"""
-    result_collector = ResultCollector(ep_config, round_duration, max_rounds)
     current_second = None
     current_jobs = []
     
@@ -487,7 +587,7 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
                     # 计算需要等待的时间以匹配原始时间戳
                     if start_timestamp is not None:
                         second_offset = current_second - start_timestamp
-                        current_offset = time.time() - start_time
+                        current_offset = time.perf_counter() - start_time
                         
                         # 如果需要等待以保持原始时间间隔
                         if second_offset > current_offset:
@@ -501,8 +601,28 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
                     
                     # 为每个任务创建异步任务并设置回调
                     for job in current_jobs:
+                        send_time = time.perf_counter()
                         task = asyncio.create_task(send_request(client, job))
-                        task.add_done_callback(result_collector.task_done_callback)
+                        
+                        # 添加回调函数
+                        def callback(task, job_request_id=job.request_id, job_send_time=send_time, job=job):
+                            try:
+                                result = task.result()
+                                request_id, status, ttft, total_time, tokens_in, tokens_out, error = result
+                                result_collector.results_queue.put(result)
+                                result_collector.total_requests += 1
+                                if status == "OK":
+                                    result_collector.successful_requests += 1
+                                
+                                # 添加详细日志数据
+                                if detailed_logs and status == "OK":
+                                    result_collector.add_detailed_result(
+                                        request_id, job.conversation_id, job_send_time, ttft, total_time, tokens_in, tokens_out
+                                    )
+                            except Exception as e:
+                                logger.error(f"Error in send_request callback: {e}")
+                        
+                        task.add_done_callback(callback)
                     
                     result_collector.increment_jobs_processed(batch_size)
                     
@@ -530,6 +650,11 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
                     # 最后一次收集结果
                     result_collector.collect_results()
                     result_collector.check_and_report_metrics()
+                    
+                    # 保存详细日志结果
+                    if detailed_logs:
+                        result_collector.save_detailed_results()
+                        
                     logger.info("All requests processed, exiting")
                     break
                     
@@ -537,13 +662,12 @@ async def replay_by_timestamp(client, ep_config, start_timestamp, start_time, ro
         logger.error(f"Error in timestamp replay: {e}")
         raise
 
-async def replay_by_qps(client, ep_config, target_qps, round_duration, max_rounds=None):
+async def replay_by_qps(client, result_collector, target_qps, round_duration, max_rounds=None, detailed_logs=False):
     """按指定QPS重放请求，使用令牌桶算法确保QPS精确控制"""
-    result_collector = ResultCollector(ep_config, round_duration, max_rounds)
     time_between_requests = 1.0 / target_qps
     
     # 初始化计时器和请求计数器
-    last_request_time = time.time()
+    last_request_time = time.perf_counter()
     expected_requests = 0
     
     try:
@@ -554,7 +678,7 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration, max_round
                     continue
                 
                 # 计算当前时间和应发送的请求数
-                current_time = time.time()
+                current_time = time.perf_counter()
                 elapsed_since_start = current_time - result_collector.round_start_time
                 expected_requests = math.floor(elapsed_since_start * target_qps)
                 
@@ -568,8 +692,29 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration, max_round
                             break
                             
                         job = job_queue.get()
+                        send_time = time.perf_counter()
                         task = asyncio.create_task(send_request(client, job))
-                        task.add_done_callback(result_collector.task_done_callback)
+                        
+                        # 添加回调函数
+                        def callback(task, job_request_id=job.request_id, job_send_time=send_time, job=job):
+                            try:
+                                result = task.result()
+                                request_id, status, ttft, total_time, tokens_in, tokens_out, error = result
+                                result_collector.results_queue.put(result)
+                                result_collector.total_requests += 1
+                                if status == "OK":
+                                    result_collector.successful_requests += 1
+                                
+                                # 添加详细日志数据
+                                if detailed_logs and status == "OK":
+                                    result_collector.add_detailed_result(
+                                        request_id, job.conversation_id, job_send_time, ttft, total_time, tokens_in, tokens_out
+                                    )
+                            except Exception as e:
+                                logger.error(f"Error in send_request callback: {e}")
+                        
+                        task.add_done_callback(callback)
+                        
                         result_collector.increment_jobs_processed()
                 
                 # 收集结果并报告指标
@@ -579,7 +724,7 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration, max_round
                 
                 # 精确控制循环间隔，避免CPU空转
                 next_decision_time = result_collector.round_start_time + ((result_collector.jobs_processed + 1) / target_qps)
-                sleep_time = max(0, next_decision_time - time.time())
+                sleep_time = max(0, next_decision_time - time.perf_counter())
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
                 else:
@@ -598,6 +743,11 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration, max_round
                     # 最后一次收集结果
                     result_collector.collect_results()
                     result_collector.check_and_report_metrics(qps=target_qps)
+                    
+                    # 保存详细日志结果
+                    if detailed_logs:
+                        result_collector.save_detailed_results()
+                        
                     logger.info("All requests processed, exiting")
                     break
                     
@@ -605,25 +755,9 @@ async def replay_by_qps(client, ep_config, target_qps, round_duration, max_round
         logger.error(f"Error in QPS replay: {e}")
         raise
 
-async def async_replay_loop(start_timestamp, start_time, ep_config: dict = None, replay_mode: str = "timestamp", 
-                          target_qps: float = 1.0, round_duration: int = 60, max_rounds: int = None):
-    """根据不同模式选择相应的重放方式"""
-    try:
-        client = await client_manager.get_client(ep_config)
-        
-        if replay_mode == "timestamp":
-            await replay_by_timestamp(client, ep_config, start_timestamp, start_time, round_duration, max_rounds)
-        elif replay_mode == "qps":
-            await replay_by_qps(client, ep_config, target_qps, round_duration, max_rounds)
-        else:
-            logger.error(f"Unknown replay mode: {replay_mode}")
-            
-    finally:
-        # 清理资源
-        await client_manager.cleanup()
-
 def replay_thread(ep_config: dict = None, replay_mode: str = "timestamp", 
-                 target_qps: float = 1.0, round_duration: int = 60, max_rounds: int = None):
+                 target_qps: float = 1.0, round_duration: int = 60, max_rounds: int = None,
+                 detailed_logs: bool = False):
     """Thread B: Consume jobs from the queue and send requests in batches by second."""
     try:
         logger.info("Starting replay thread")
@@ -635,7 +769,7 @@ def replay_thread(ep_config: dict = None, replay_mode: str = "timestamp",
             
         first_job = job_queue.get()
         start_timestamp = first_job.second_timestamp  # Use second-level timestamp
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         # Put the job back in the queue
         job_queue.put(first_job)
@@ -647,7 +781,8 @@ def replay_thread(ep_config: dict = None, replay_mode: str = "timestamp",
         try:
             loop.run_until_complete(async_replay_loop(
                 start_timestamp, start_time, ep_config,
-                replay_mode, target_qps, round_duration, max_rounds
+                replay_mode, target_qps, round_duration, max_rounds,
+                detailed_logs
             ))
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received, stopping replay")
@@ -670,17 +805,32 @@ def results_analysis(
             logger.error(f"无法创建或打开输出文件 {json_output}: {e}")
             json_output = None
 
-    df = pd.DataFrame(
-        query_results,
-        columns=[
-            "valid",
-            "ttft",
-            "total_time",
-            "tokens_in",
-            "tokens_out",
-            "cause",
-        ],
-    )
+    # 根据返回结果的格式调整列名
+    if query_results and len(query_results[0]) > 6:  # 新格式包含request_id
+        df = pd.DataFrame(
+            query_results,
+            columns=[
+                "request_id",
+                "valid",
+                "ttft",
+                "total_time",
+                "tokens_in",
+                "tokens_out",
+                "cause",
+            ],
+        )
+    else:
+        df = pd.DataFrame(
+            query_results,
+            columns=[
+                "valid",
+                "ttft",
+                "total_time",
+                "tokens_in",
+                "tokens_out",
+                "cause",
+            ],
+        )
     
     # 计算成功率
     total_requests = len(df)
@@ -817,6 +967,23 @@ def main(args, sample_start, sample_end):
             "max_tokens": args.max_tokens
         }
         
+        # 创建全局结果收集器，用于在程序退出时保存结果
+        global global_result_collector
+        global_result_collector = None
+        
+        # 注册全局信号处理函数
+        def global_signal_handler(sig, frame):
+            logger.info("收到中断信号，正在优雅退出...")
+            if global_result_collector and args.detailed_logs:
+                logger.info("关闭详细日志文件...")
+                global_result_collector.save_detailed_results()
+            logger.info("程序退出")
+            sys.exit(0)
+        
+        # 注册SIGINT信号处理函数
+        if args.detailed_logs:
+            signal.signal(signal.SIGINT, global_signal_handler)
+        
         # Start the log reader thread
         reader_thread = threading.Thread(target=log_reader_thread, args=(args.input, args.preload_time, sample_start, sample_end, ep_config))
         reader_thread.daemon = True
@@ -829,7 +996,7 @@ def main(args, sample_start, sample_end):
         # Start the replay thread with ep_config and replay parameters
         replay_thread_instance = threading.Thread(
             target=replay_thread, 
-            args=(ep_config, args.replay_mode, args.target_qps, args.round_duration, args.max_rounds)
+            args=(ep_config, args.replay_mode, args.target_qps, args.round_duration, args.max_rounds, args.detailed_logs)
         )
         replay_thread_instance.daemon = True
         replay_thread_instance.start()
@@ -842,9 +1009,17 @@ def main(args, sample_start, sample_end):
             # 确保在主程序退出时清理资源
             loop = asyncio.get_event_loop()
             loop.run_until_complete(client_manager.cleanup())
+            
+            # 关闭详细日志文件
+            if global_result_collector and args.detailed_logs:
+                global_result_collector.save_detailed_results()
         
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, stopping threads")
+        # 在键盘中断时关闭详细日志文件
+        if global_result_collector and args.detailed_logs:
+            logger.info("关闭详细日志文件...")
+            global_result_collector.save_detailed_results()
     except Exception as e:
         logger.error(f"Error in main function: {e}")
         raise
@@ -884,6 +1059,9 @@ if __name__ == "__main__":
     # 是否将结果输出到json已经选择输出的路径
     parser.add_argument("--json-output", type=str, default=None,
                         help="If set, the file to save the results in json format")
+    # 是否记录详细请求数据并导出CSV
+    parser.add_argument("--detailed-logs", action="store_true",
+                        help="Enable detailed logging of each request with request-id, timestamps and token counts, saved as CSV")
     
     args = parser.parse_args()
     
