@@ -409,7 +409,7 @@ class ResultCollector:
             # 创建CSV文件并写入表头
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             # 设置csv路径，使用当前文件所在文件夹下的log文件夹
-            log_dir = os.path.join(os.path.dirname(__file__), "log")
+            log_dir = os.path.join(os.path.dirname(__file__), "logs")
             if not os.path.exists(log_dir):
                 os.makedirs(log_dir)
             self.csv_filename = f"{log_dir}/detailed_results_{timestamp}.csv"
@@ -417,17 +417,6 @@ class ResultCollector:
             self.csv_file.write("request_id,conversation_id,send_time,ttft_time,total_time,tokens_in,tokens_out,ttft,tpot\n")
             self.csv_file.flush()
             logger.info(f"已创建详细日志文件: {self.csv_filename}")
-            
-            # 注册信号处理函数，在Ctrl+C时关闭文件
-            def signal_handler(sig, frame):
-                logger.info("收到中断信号，关闭日志文件...")
-                if hasattr(self, 'csv_file') and not self.csv_file.closed:
-                    self.csv_file.close()
-                logger.info("详细日志已保存，程序退出")
-                sys.exit(0)
-            
-            # 注册SIGINT信号处理函数
-            signal.signal(signal.SIGINT, signal_handler)
 
     def task_done_callback(self, task):
         """处理异步任务完成的回调函数"""
@@ -980,7 +969,7 @@ def main(args, sample_start, sample_end):
             logger.info("程序退出")
             sys.exit(0)
         
-        # 注册SIGINT信号处理函数
+        # 注册SIGINT信号处理函数（只在主线程中注册）
         if args.detailed_logs:
             signal.signal(signal.SIGINT, global_signal_handler)
         
