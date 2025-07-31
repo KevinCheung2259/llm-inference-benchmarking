@@ -70,7 +70,7 @@ Key parameters:
 - `--use-chat`: Whether to use chat interface
 - `--json-output`: Output performance metrics in JSON format
 - `--verbose`: Enable detailed logging output (default: False, only show statistics)
-- `--detailed-logs`: Enable detailed per-request logging with unique IDs (saved to CSV file)
+- `--detailed-logs`: Enable detailed per-request logging dir path with unique IDs (saved to CSV file)
 
 Performance metrics:
 - Latency statistics

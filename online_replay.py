@@ -210,8 +210,7 @@ def process_log_line(line: str, sample_start: float = 0.0, sample_end: float = 1
                 "model": ep_config["model"],
                 "messages": messages,
                 "stream": True,
-                "max_tokens": ep_config.get("max_tokens", 200),
-                "temperature": 0
+                "max_tokens": ep_config.get("max_tokens", 200)
             }
             url = f"{ep_config['api_base'].rstrip('/')}/chat/completions"
         else:
@@ -220,8 +219,7 @@ def process_log_line(line: str, sample_start: float = 0.0, sample_end: float = 1
                 "model": ep_config["model"],
                 "messages": [request_data['body'].get('prompt', '')],
                 "stream": True,
-                "max_tokens": ep_config.get("max_tokens", 200),
-                "temperature": 0
+                "max_tokens": ep_config.get("max_tokens", 200)
             }
             url = f"{ep_config['api_base'].rstrip('/')}/completions"
 
@@ -327,11 +325,25 @@ async def send_request(client, job):
             "X-Flow-Conversation-Id": str(job.conversation_id) if job.conversation_id else "",
             "X-Request-Id": job.request_id  # vllm读取这个字段作为request_id，添加request_id到请求头，用于全链路追踪
         }
+        extra_body = {}
+        # 采样参数全部放到 extra_body
+        extra_body.update({
+            "min_p": 0.02,
+            "top_p": 1,
+            "top_k": -1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "repetition_penalty": 1,
+            "temperature": 0.8
+        })
         
         if job.use_chat:
             if not job.body.get("messages"):
                 logger.warning("Empty messages array, skipping request")
                 return (job.request_id, "Exception", -1, -1, -1, -1, "Empty messages")
+            # 当模型名包含"MiniCPM4"，显式设置 extra_body={"add_special_tokens": True}
+            if "MiniCPM4" in job.body.get("model"):
+                extra_body["add_special_tokens"] = True
             
             response = await client.chat.completions.create(
                 model=job.body.get("model"),
@@ -343,6 +355,7 @@ async def send_request(client, job):
                 stream=True,
                 stream_options={"include_usage": True},
                 extra_headers=extra_headers,
+                extra_body=extra_body,
             )
         else:
             response = await client.completions.create(
@@ -353,6 +366,7 @@ async def send_request(client, job):
                 stream=True,
                 stream_options={"include_usage": True},
                 extra_headers=extra_headers,
+                extra_body=extra_body,
             )
             
         words = ""
@@ -408,10 +422,19 @@ class ResultCollector:
             
             # 创建CSV文件并写入表头
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # 设置csv路径，使用当前文件所在文件夹下的log文件夹
-            log_dir = os.path.join(os.path.dirname(__file__), "logs")
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir)
+            
+            # 如果detailed_logs是字符串路径，则使用指定路径
+            if isinstance(detailed_logs, str) and detailed_logs is not True:
+                # 确保目录存在
+                log_dir = os.path.dirname(detailed_logs)
+                if log_dir and not os.path.exists(log_dir):
+                    os.makedirs(log_dir)
+            else:
+                # 使用默认路径：当前文件所在文件夹下的log文件夹
+                log_dir = os.path.join(os.path.dirname(__file__), "logs")
+                if not os.path.exists(log_dir):
+                    os.makedirs(log_dir)
+            
             self.csv_filename = f"{log_dir}/detailed_results_{timestamp}.csv"
             self.csv_file = open(self.csv_filename, 'w')
             self.csv_file.write("request_id,conversation_id,send_time,ttft_time,total_time,tokens_in,tokens_out,ttft,tpot\n")
@@ -1049,8 +1072,8 @@ if __name__ == "__main__":
     parser.add_argument("--json-output", type=str, default=None,
                         help="If set, the file to save the results in json format")
     # 是否记录详细请求数据并导出CSV
-    parser.add_argument("--detailed-logs", action="store_true",
-                        help="Enable detailed logging of each request with request-id, timestamps and token counts, saved as CSV")
+    parser.add_argument("--detailed-logs", type=str, default=False,
+                        help="Enable detailed logging of each request with request-id, timestamps and token counts. Optionally specify a path to save the CSV file, otherwise default path will be used")
     
     args = parser.parse_args()
     
