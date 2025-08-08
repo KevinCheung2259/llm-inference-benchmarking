@@ -883,6 +883,15 @@ def results_analysis(
         input_tokens_per_minute = total_input_tokens / total_time_minutes
         output_tokens_per_minute = total_output_tokens / total_time_minutes
 
+        # 计算 SLO 达成率（SLO Attainment）。args.slo 为 float（秒）或 None
+        slo_seconds = args.slo if hasattr(args, "slo") else None
+
+        slo_attainment = None
+        if slo_seconds is not None and total_requests > 0:
+            # 定义：满足 valid=="OK" 且 total_time<=SLO 的请求占总请求的百分比
+            met = ((df.valid == "OK") & (df.total_time <= slo_seconds)).sum()
+            slo_attainment = (met / total_requests) * 100.0
+
         title = f"{model}\n("
         if concur_requests is not None:
             title += f"concurrency={concur_requests}, "
@@ -891,6 +900,8 @@ def results_analysis(
         if actual_qps is not None:
             title += f"actual_qps={actual_qps:.2f}, "
         title += f"success_rate={success_rate:.2f}%, "
+        if slo_attainment is not None:
+            title += f"slo_attainment={slo_attainment:.2f}%, "
         title += f"input_tokens={mean_tokens_in}, output_tokens={mean_tokens_out})"
         table.title = title
 
@@ -907,6 +918,9 @@ def results_analysis(
             json_record["model"] = model
             json_record["input_tokens_per_minute"] = input_tokens_per_minute
             json_record["output_tokens_per_minute"] = output_tokens_per_minute
+            if slo_seconds is not None and slo_attainment is not None:
+                json_record["slo_seconds"] = slo_seconds
+                json_record["slo_attainment"] = slo_attainment
 
         def show_metric(name, unit, val):
             table.add_row(
@@ -935,7 +949,6 @@ def results_analysis(
         show_metric("TPOT", "ms", s_per_output_token * 1000)
         show_metric("Input Tokens per Minute", "tokens/min", pd.Series([input_tokens_per_minute]))
         show_metric("Output Tokens per Minute", "tokens/min", pd.Series([output_tokens_per_minute]))
-        show_metric("Success Rate", "%", pd.Series([success_rate]))
 
         console.print(table)
 
@@ -1065,6 +1078,9 @@ if __name__ == "__main__":
                         help='Sample range [START, END) to control the percentage of requests to send (e.g., 0.0 0.2). Default: [0.0, 1.0]')
     parser.add_argument("--target-qps", type=float, default=1.0,
                         help="Target QPS for qps mode")
+    # SLO：延迟目标（单位：秒，float）。例如：--slo 5.0
+    parser.add_argument("--slo", type=float, default=None,
+                        help="Service Level Objective for latency in seconds (float). Example: 5.0. If set, will report SLO Attainment")
     
     # 是否打印详细日志
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
