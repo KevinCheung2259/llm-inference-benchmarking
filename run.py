@@ -41,7 +41,7 @@ def rnd_num_generator(num_digits=2) -> str:
     # Step 1: Generate a random number
     # Generate the number of digits specified (e.g. if NUM_DIGITS = 3, then
     # any number between 100 and 1000 is OK).
-    rnd_num = random.randrange(10 ** (200 - 1), 10 ** (200))
+    rnd_num = random.randrange(10 ** (num_digits - 1), 10 ** (num_digits))
 
     # Step 2: convert to words.
     rnd_num_words = num2words(rnd_num)
@@ -61,10 +61,10 @@ async def endpoint_evaluation_request(client, ep_config):
             " story. "
         )
     else:
-           rnd_num = None
-           random_tokens = args.random_tokens
-           random_tokens_str = " ".join(random.choices(args.random_token_list, k=random_tokens))
-           prompt = args.prompt + random_tokens_str + ". Give me an extreme long analysis on the previous text"
+        rnd_num = None
+        random_tokens = args.random_tokens
+        random_tokens_str = " ".join(random.choices(args.random_token_list, k=random_tokens))
+        prompt = args.prompt + random_tokens_str + ". Give me an extreme long analysis on the previous text"
 
     words = ""
 
