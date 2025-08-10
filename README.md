@@ -71,7 +71,7 @@ Key parameters:
 - `--json-output`: Output performance metrics in JSON format
 - `--verbose`: Enable detailed logging output (default: False, only show statistics)
 - `--detailed-logs`: Enable detailed per-request logging dir path with unique IDs (saved to CSV file)
-- `--slo`: Latency SLO target in seconds (float). Example: `--slo 5.0`. When set, the report includes "SLO Attainment" which is the percentage of total requests that are successful and have latency ≤ SLO.
+- `--e2e-slo`: End-to-end latency SLO target in seconds (float). Example: `--e2e-slo 5.0`. When set, the report includes "E2E SLO Attainment" which is the percentage of total requests that are successful and have latency ≤ SLO.
 - `--ttft-slo`: TTFT SLO in milliseconds (int). When set, the report includes "TTFT SLO Attainment" which is the percentage of total requests that are successful and have TTFT ≤ threshold.
 - `--tpot-slo`: TPOT SLO in milliseconds (int). When set, the report includes "TPOT SLO Attainment" which is the percentage of requests whose time per output token (ms/token) ≤ threshold.
 
@@ -83,7 +83,7 @@ Performance metrics:
 - TPOT (Time Per Output Token)
 - Input/Output Tokens per Minute
 - Success Rate
-- SLO Attainment (if `--slo` is provided)
+- E2E SLO Attainment (if `--e2e-slo` is provided)
 - TTFT SLO Attainment (if `--ttft-slo` is provided)
 - TPOT SLO Attainment (if `--tpot-slo` is provided)
 

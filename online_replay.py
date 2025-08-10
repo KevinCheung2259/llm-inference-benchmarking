@@ -883,15 +883,15 @@ def results_analysis(
         input_tokens_per_minute = total_input_tokens / total_time_minutes
         output_tokens_per_minute = total_output_tokens / total_time_minutes
 
-        # 计算 SLO 达成率（SLO Attainment）。args.slo 为 float（秒）或 None
-        slo_seconds = args.slo if hasattr(args, "slo") else None
+        # 计算 SLO 达成率（SLO Attainment）。args.e2e_slo 为 float（秒）或 None
+        slo_seconds = args.e2e_slo if hasattr(args, "e2e_slo") else None
 
         slo_attainment = None
         if slo_seconds is not None and total_requests > 0:
             # 定义：满足 valid=="OK" 且 total_time<=SLO 的请求占总请求的百分比
             met = ((df.valid == "OK") & (df.total_time <= slo_seconds)).sum()
             slo_attainment = (met / total_requests) * 100.0
-
+ 
         # 读取可选的 TTFT 和 TPOT SLO（单位：ms，int）并计算达成率
         ttft_slo_ms = args.ttft_slo if hasattr(args, "ttft_slo") else None
         tpot_slo_ms = args.tpot_slo if hasattr(args, "tpot_slo") else None
@@ -904,9 +904,11 @@ def results_analysis(
             ttft_slo_attainment = (met_ttft / total_requests) * 100.0
 
         if tpot_slo_ms is not None and total_requests > 0:
-            # s_per_output_token 单位为秒/Token，上方已计算
-            tpot_series_ms = s_per_output_token * 1000
-            met_tpot = (tpot_series_ms <= tpot_slo_ms).sum()
+            # 使 TPOT 达成率逻辑与 TTFT 一致：
+            # 百分比= 总请求中 满足 valid=="OK" 且 TPOT<=阈值 的比例
+            tpot_ms_all = ((df["total_time"] - df["ttft"]) / (df["tokens_out"] - 1)) * 1000
+            valid_mask = (df["valid"] == "OK") & (df["tokens_out"] > 1)
+            met_tpot = (valid_mask & (tpot_ms_all <= tpot_slo_ms)).sum()
             tpot_slo_attainment = (met_tpot / total_requests) * 100.0
 
     title = f"{model}\n("
@@ -920,9 +922,11 @@ def results_analysis(
     title += f"input_tokens={mean_tokens_in}, output_tokens={mean_tokens_out})"
 
     # 将 SLO 指标与达成率移动到标题的新一行中
-    if (hasattr(args, "ttft_slo") and args.ttft_slo is not None) or (hasattr(args, "tpot_slo") and args.tpot_slo is not None):
+    if (hasattr(args, "ttft_slo") and args.ttft_slo is not None) or \
+        (hasattr(args, "tpot_slo") and args.tpot_slo is not None) or \
+        (hasattr(args, "e2e_slo") and args.e2e_slo is not None):
         line_parts = []
-        if slo_attainment is not None:
+        if 'slo_attainment' in locals() and slo_attainment is not None:
             line_parts.append(f"e2e_slo_attainment: {slo_attainment:.2f}%")
         if 'ttft_slo_attainment' in locals() and ttft_slo_attainment is not None:
             line_parts.append(f"ttft_slo_attainment: {ttft_slo_attainment:.2f}%")
@@ -1117,9 +1121,9 @@ if __name__ == "__main__":
                         help='Sample range [START, END) to control the percentage of requests to send (e.g., 0.0 0.2). Default: [0.0, 1.0]')
     parser.add_argument("--target-qps", type=float, default=1.0,
                         help="Target QPS for qps mode")
-    # SLO：延迟目标（单位：秒，float）。例如：--slo 5.0
-    parser.add_argument("--slo", type=float, default=None,
-                        help="Service Level Objective for latency in seconds (float). Example: 5.0. If set, will report SLO Attainment")
+    # E2E SLO：端到端延迟目标（单位：秒，float）。例如：--e2e-slo 5.0
+    parser.add_argument("--e2e-slo", type=float, default=None,
+                        help="End-to-end latency SLO in seconds (float). Example: 5.0. If set, will report E2E SLO Attainment")
     # 新增：TTFT/TPOT 的 SLO（单位：毫秒，int）
     parser.add_argument("--ttft-slo", type=int, default=None,
                         help="TTFT SLO in milliseconds (int). If set, will report TTFT SLO Attainment")
