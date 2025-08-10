@@ -892,65 +892,104 @@ def results_analysis(
             met = ((df.valid == "OK") & (df.total_time <= slo_seconds)).sum()
             slo_attainment = (met / total_requests) * 100.0
 
-        title = f"{model}\n("
-        if concur_requests is not None:
-            title += f"concurrency={concur_requests}, "
-        if qps is not None:
-            title += f"target_qps={int(qps) if int(qps) == qps else qps}, "
-        if actual_qps is not None:
-            title += f"actual_qps={actual_qps:.2f}, "
-        title += f"success_rate={success_rate:.2f}%, "
+        # 读取可选的 TTFT 和 TPOT SLO（单位：ms，int）并计算达成率
+        ttft_slo_ms = args.ttft_slo if hasattr(args, "ttft_slo") else None
+        tpot_slo_ms = args.tpot_slo if hasattr(args, "tpot_slo") else None
+
+        ttft_slo_attainment = None
+        tpot_slo_attainment = None
+
+        if ttft_slo_ms is not None and total_requests > 0:
+            met_ttft = ((df.valid == "OK") & (df.ttft <= (ttft_slo_ms / 1000.0))).sum()
+            ttft_slo_attainment = (met_ttft / total_requests) * 100.0
+
+        if tpot_slo_ms is not None and total_requests > 0:
+            # s_per_output_token 单位为秒/Token，上方已计算
+            tpot_series_ms = s_per_output_token * 1000
+            met_tpot = (tpot_series_ms <= tpot_slo_ms).sum()
+            tpot_slo_attainment = (met_tpot / total_requests) * 100.0
+
+    title = f"{model}\n("
+    if concur_requests is not None:
+        title += f"concurrency={concur_requests}, "
+    if qps is not None:
+        title += f"target_qps={int(qps) if int(qps) == qps else qps}, "
+    if actual_qps is not None:
+        title += f"actual_qps={actual_qps:.2f}, "
+    title += f"success_rate={success_rate:.2f}%, "
+    title += f"input_tokens={mean_tokens_in}, output_tokens={mean_tokens_out})"
+
+    # 将 SLO 指标与达成率移动到标题的新一行中
+    if (hasattr(args, "ttft_slo") and args.ttft_slo is not None) or (hasattr(args, "tpot_slo") and args.tpot_slo is not None):
+        line_parts = []
         if slo_attainment is not None:
-            title += f"slo_attainment={slo_attainment:.2f}%, "
-        title += f"input_tokens={mean_tokens_in}, output_tokens={mean_tokens_out})"
-        table.title = title
+            line_parts.append(f"e2e_slo_attainment: {slo_attainment:.2f}%")
+        if 'ttft_slo_attainment' in locals() and ttft_slo_attainment is not None:
+            line_parts.append(f"ttft_slo_attainment: {ttft_slo_attainment:.2f}%")
+        if 'tpot_slo_attainment' in locals() and tpot_slo_attainment is not None:
+            line_parts.append(f"tpot_slo_attainment: {tpot_slo_attainment:.2f}%")
+        if line_parts:
+            title = title + "\n" + ", ".join(line_parts)
+ 
+    table.title = title
 
+    if json_output:
+        if concur_requests is not None:
+            json_record["concurrency"] = concur_requests
+        if qps is not None:
+            json_record["target_qps"] = qps
+        if actual_qps is not None:
+            json_record["actual_qps"] = actual_qps
+        json_record["success_rate"] = success_rate
+        json_record["input_tokens"] = mean_tokens_in
+        json_record["output_tokens"] = mean_tokens_out
+        json_record["model"] = model
+        json_record["input_tokens_per_minute"] = input_tokens_per_minute
+        json_record["output_tokens_per_minute"] = output_tokens_per_minute
+        if slo_seconds is not None and slo_attainment is not None:
+            json_record["slo_seconds"] = slo_seconds
+            json_record["slo_attainment"] = slo_attainment
+        # 追加 TTFT/TPOT SLO 输出
+        if 'ttft_slo_ms' not in locals():
+            ttft_slo_ms = args.ttft_slo if hasattr(args, "ttft_slo") else None
+        if 'tpot_slo_ms' not in locals():
+            tpot_slo_ms = args.tpot_slo if hasattr(args, "tpot_slo") else None
+        if 'ttft_slo_attainment' in locals() and ttft_slo_ms is not None and ttft_slo_attainment is not None:
+            json_record["ttft_slo_ms"] = ttft_slo_ms
+            json_record["ttft_slo_attainment"] = ttft_slo_attainment
+        if 'tpot_slo_attainment' in locals() and tpot_slo_ms is not None and tpot_slo_attainment is not None:
+            json_record["tpot_slo_ms"] = tpot_slo_ms
+            json_record["tpot_slo_attainment"] = tpot_slo_attainment
+
+    def show_metric(name, unit, val):
+        table.add_row(
+            f"{name}({unit})",
+            f"{val.min():.3f}",
+            f"{val.quantile(0.5):.3f}",
+            f"{val.quantile(0.9):.3f}",
+            f"{val.quantile(0.95):.3f}",
+            f"{val.quantile(0.99):.3f}",
+            f"{val.max():.3f}",
+        )
         if json_output:
-            if concur_requests is not None:
-                json_record["concurrency"] = concur_requests
-            if qps is not None:
-                json_record["target_qps"] = qps
-            if actual_qps is not None:
-                json_record["actual_qps"] = actual_qps
-            json_record["success_rate"] = success_rate
-            json_record["input_tokens"] = mean_tokens_in
-            json_record["output_tokens"] = mean_tokens_out
-            json_record["model"] = model
-            json_record["input_tokens_per_minute"] = input_tokens_per_minute
-            json_record["output_tokens_per_minute"] = output_tokens_per_minute
-            if slo_seconds is not None and slo_attainment is not None:
-                json_record["slo_seconds"] = slo_seconds
-                json_record["slo_attainment"] = slo_attainment
+            json_record[name] = {
+                "unit": unit,
+                "min": val.min(),
+                "p50": val.quantile(0.5),
+                "p90": val.quantile(0.9),
+                "p95": val.quantile(0.95),
+                "p99": val.quantile(0.99),
+                "max": val.max(),
+            }
 
-        def show_metric(name, unit, val):
-            table.add_row(
-                f"{name}({unit})",
-                f"{val.min():.3f}",
-                f"{val.quantile(0.5):.3f}",
-                f"{val.quantile(0.9):.3f}",
-                f"{val.quantile(0.95):.3f}",
-                f"{val.quantile(0.99):.3f}",
-                f"{val.max():.3f}",
-            )
-            if json_output:
-                json_record[name] = {
-                    "unit": unit,
-                    "min": val.min(),
-                    "p50": val.quantile(0.5),
-                    "p90": val.quantile(0.9),
-                    "p95": val.quantile(0.95),
-                    "p99": val.quantile(0.99),
-                    "max": val.max(),
-                }
+    show_metric("Latency", "s", cdf["total_time"])
+    show_metric("Throughput", "tokens/s", cdf["tokens_per_s"])
+    show_metric("TTFT", "s", cdf["ttft"])
+    show_metric("TPOT", "ms", s_per_output_token * 1000)
+    show_metric("Input Tokens per Minute", "tokens/min", pd.Series([input_tokens_per_minute]))
+    show_metric("Output Tokens per Minute", "tokens/min", pd.Series([output_tokens_per_minute]))
 
-        show_metric("Latency", "s", cdf["total_time"])
-        show_metric("Throughput", "tokens/s", cdf["tokens_per_s"])
-        show_metric("TTFT", "s", cdf["ttft"])
-        show_metric("TPOT", "ms", s_per_output_token * 1000)
-        show_metric("Input Tokens per Minute", "tokens/min", pd.Series([input_tokens_per_minute]))
-        show_metric("Output Tokens per Minute", "tokens/min", pd.Series([output_tokens_per_minute]))
-
-        console.print(table)
+    console.print(table)
 
     def error_analysis(df):
         exceptions = df[df.valid == "Exception"]
@@ -1081,7 +1120,12 @@ if __name__ == "__main__":
     # SLO：延迟目标（单位：秒，float）。例如：--slo 5.0
     parser.add_argument("--slo", type=float, default=None,
                         help="Service Level Objective for latency in seconds (float). Example: 5.0. If set, will report SLO Attainment")
-    
+    # 新增：TTFT/TPOT 的 SLO（单位：毫秒，int）
+    parser.add_argument("--ttft-slo", type=int, default=None,
+                        help="TTFT SLO in milliseconds (int). If set, will report TTFT SLO Attainment")
+    parser.add_argument("--tpot-slo", type=int, default=None,
+                        help="TPOT SLO in milliseconds (int). If set, will report TPOT SLO Attainment")
+
     # 是否打印详细日志
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     # 是否将结果输出到json已经选择输出的路径
