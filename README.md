@@ -71,6 +71,10 @@ Key parameters:
 - `--json-output`: Output performance metrics in JSON format
 - `--verbose`: Enable detailed logging output (default: False, only show statistics)
 - `--detailed-logs`: Enable detailed per-request logging dir path with unique IDs (saved to CSV file)
+- `--slo`: Latency SLO target in seconds (float). Example: `--slo 5.0`. When set, the report includes "SLO Attainment" which is the percentage of total requests that are successful and have latency ≤ SLO.
+- `--ttft-slo`: TTFT SLO in milliseconds (int). When set, the report includes "TTFT SLO Attainment" which is the percentage of total requests that are successful and have TTFT ≤ threshold.
+- `--tpot-slo`: TPOT SLO in milliseconds (int). When set, the report includes "TPOT SLO Attainment" which is the percentage of requests whose time per output token (ms/token) ≤ threshold.
+
 
 Performance metrics:
 - Latency statistics
@@ -79,6 +83,12 @@ Performance metrics:
 - TPOT (Time Per Output Token)
 - Input/Output Tokens per Minute
 - Success Rate
+- SLO Attainment (if `--slo` is provided)
+- TTFT SLO Attainment (if `--ttft-slo` is provided)
+- TPOT SLO Attainment (if `--tpot-slo` is provided)
+
+Notes on display:
+- When any SLO thresholds are set, a second line is appended to the table title to summarize the SLO attainment values (E2E/TTFT/TPOT) for quick inspection.
 
 #### Attention
 If you want to start a process using online_replay.py to replay qps>10, you'd better split it to multiple terminals and run them separately. By modifying the `--sample-range` parameter, you can specify different sampling ranges for each process. This approach helps avoid client-side issues caused by high concurrency. You can refer to `run_client_split.sh` for implementation details.
@@ -104,5 +114,9 @@ When using the `--detailed-logs` parameter, the script generates a CSV file with
 - `tokens_out`: Number of output tokens
 - `ttft`: Time to first token (seconds)
 - `tpot`: Time per output token (seconds)
+
+JSON output extra fields when SLO flags are provided:
+- `ttft_slo_ms`, `ttft_slo_attainment`
+- `tpot_slo_ms`, `tpot_slo_attainment`
 
 This data can be analyzed using any CSV-compatible tool such as pandas, Excel, or data visualization software to identify performance patterns, bottlenecks, or unusual behavior in your LLM serving system.
