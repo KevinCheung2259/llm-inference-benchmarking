@@ -1,0 +1,33 @@
+{
+  "traffic_patterns": {
+    "total_requests": 20166,
+    "time_span_seconds": 4296.0,
+    "time_span_hours": 1.1933333333333334,
+    "overall_qps": 4.694134078212291,
+    "interarrival_stats": {
+      "count": 20165,
+      "mean": 0.2130424001983635,
+      "std": 0.4135649855341488,
+      "min": 0.0,
+      "max": 2.0,
+      "median": 0.0,
+      "p95": 1.0,
+      "p99": 1.0,
+      "cv": 1.9412332246964874
+    }
+  },
+  "anomaly_detection": {
+    "mean_qps": 4.668055555555555,
+    "std_qps": 0.3819999959601836,
+    "upper_threshold": 5.814055543436106,
+    "lower_threshold": 3.5220555676750047,
+    "anomaly_count": 1,
+    "anomalies": [
+      {
+        "timestamp": "2025-03-19T18:41:00",
+        "request_count": 172,
+        "qps": 2.8666666666666667
+      }
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "analysis_settings": {
+    "default_log_file": "/mnt/shared/data/replay-logs-origin.log",
+    "default_sample_range": [0.0, 1.0],
+    "default_output_dir": "analysis_results",
+    "time_granularities": ["1min", "5min", "10min", "1hour"],
+    "plot_settings": {
+      "figure_size": [15, 12],
+      "dpi": 300,
+      "save_formats": ["png", "pdf"]
+    }
+  },
+  "cv_interpretation": {
+    "low_variation": {
+      "threshold": 0.5,
+      "description": "低变异，流量稳定",
+      "color": "green"
+    },
+    "medium_variation": {
+      "threshold": 1.0,
+      "description": "中等变异，流量较稳定",
+      "color": "yellow"
+    },
+    "high_variation": {
+      "threshold": "infinity",
+      "description": "高变异，流量波动明显",
+      "color": "red"
+    }
+  },
+  "output_files": {
+    "interarrival_times": "interarrival_times.csv",
+    "qps_1min": "qps_1min.csv",
+    "qps_5min": "qps_5min.csv",
+    "qps_10min": "qps_10min.csv",
+    "qps_1hour": "qps_1hour.csv",
+    "summary": "analysis_summary.json",
+    "plots": "arrival_rate_analysis"
+  }
+} 
