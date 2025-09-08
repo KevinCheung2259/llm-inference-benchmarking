@@ -13,7 +13,7 @@ VERBOSE=false      # Set to true for detailed logging
 
 # Replay configuration
 DATASET="flowgpt"
-TARGET_QPS=16                  # only used when REPLAY_MODE="qps"
+TARGET_QPS=8                  # only used when REPLAY_MODE="qps"
 REPLAY_MODE="qps"        # "timestamp" | "qps"
 LOWER_BOUND=0.0                # only used when REPLAY_MODE="timestamp"
 UPPER_BOUND=0.14                # only used when REPLAY_MODE="timestamp"

@@ -4,9 +4,9 @@ set -euo pipefail
 # --- Configuration ---
 INPUT_LOG="/home/ubuntu/replay-logs-origin.log"   # Change to your log file path
 API_BASE="http://localhost:8888/v1"                   # Change to your API base URL
-MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"         # Change to your model
+MODEL_NAME="Qwen/QwQ-32B"         # Change to your model
 API_KEY="your_api_key_here"                           # Change to your API key
-MAX_ROUNDS=10
+MAX_ROUNDS=5
 MAX_TOKENS=200
 USE_CHAT=false     # Set to true if using chat endpoint
 VERBOSE=false      # Set to true for detailed logging
@@ -16,7 +16,7 @@ DATASET="flowgpt"
 TARGET_QPS=10                  # only used when REPLAY_MODE="qps"
 REPLAY_MODE="timestamp"        # "timestamp" | "qps"
 LOWER_BOUND=0.0                # only used when REPLAY_MODE="timestamp"
-UPPER_BOUND=0.6                # only used when REPLAY_MODE="timestamp"
+UPPER_BOUND=0.20                # only used when REPLAY_MODE="timestamp"
 
 # SLO
 E2E_SLO=5
@@ -28,7 +28,7 @@ ENGINE=sla
 ROUTER=qps
 
 # Output (per-process会自动加后缀，避免覆盖)
-OUT_DIR_ROOT="exp_new/${DATASET}_${REPLAY_MODE}_${ENGINE}_${ROUTER}_${LOWER_BOUND}_${UPPER_BOUND}"
+OUT_DIR_ROOT="exp_qwen32b/${DATASET}_${REPLAY_MODE}_${ENGINE}_${ROUTER}_${LOWER_BOUND}_${UPPER_BOUND}"
 OUT_PREFIX="${OUT_DIR_ROOT}/${DATASET}_${REPLAY_MODE}_${ENGINE}_${ROUTER}"
 
 # --- Common Arguments ---
