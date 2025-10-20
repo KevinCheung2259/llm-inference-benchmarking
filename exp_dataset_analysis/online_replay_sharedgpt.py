@@ -307,7 +307,7 @@ def log_reader_thread(input_file: str, preload_time: int = 180, sample_start: fl
         last_timestamp = None
 
         if True:
-            ds = load_dataset(dataset, split="train")
+            ds = load_dataset(dataset, split="train", token=os.getenv("HUGGINGFACE_TOKEN"))
             logger.info("Dataset loaded successfully")
             for item in ds:
                 job = process_dataset_item(item, sample_start, sample_end, ep_config)

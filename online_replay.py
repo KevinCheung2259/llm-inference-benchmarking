@@ -1096,7 +1096,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Replay chat log requests')
     parser.add_argument('--input', '-i', default="/mnt/shared/data/replay-logs-origin.log",
                         help='Input log file (default: chat_log.log)')
-    parser.add_argument('--preload-time', '-p', type=int, default=2,
+    parser.add_argument('--preload-time', '-p', type=int, default=5,
                         help='Preload time in seconds (default: 2)')
     parser.add_argument("--api-key", type=str, default="a" * 32,
                         help="API key")
